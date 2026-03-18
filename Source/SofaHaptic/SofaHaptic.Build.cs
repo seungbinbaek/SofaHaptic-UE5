@@ -7,11 +7,12 @@ public class SofaHaptic : ModuleRules
 	public SofaHaptic(ReadOnlyTargetRules Target) : base(Target)
 	{
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
-	
+
 		PublicDependencyModuleNames.AddRange(new string[]
 		{
 			"Core", "CoreUObject", "Engine", "InputCore",
-			"Sockets", "Networking", "ProceduralMeshComponent"
+			"Sockets", "Networking", "ProceduralMeshComponent",
+			"SofaPhysicsAPILib"
 		});
 
 		PrivateDependencyModuleNames.AddRange(new string[] {  });
