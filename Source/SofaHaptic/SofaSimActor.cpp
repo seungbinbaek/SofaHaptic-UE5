@@ -17,6 +17,9 @@ ASofaSimActor::ASofaSimActor()
 
 	LiverMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("LiverMesh"));
 	RootComponent = LiverMesh;
+
+	InstrumentMesh = CreateDefaultSubobject<UProceduralMeshComponent>(TEXT("InstrumentMesh"));
+	InstrumentMesh->SetupAttachment(RootComponent);
 }
 
 void ASofaSimActor::BeginPlay()
@@ -125,9 +128,8 @@ void ASofaSimActor::InitSOFA()
 	int nbMeshes = (int)SofaAPI->getNbOutputMeshes();
 	UE_LOG(LogTemp, Log, TEXT("SofaSimActor: Scene loaded — %d output mesh(es)"), nbMeshes);
 
-	// ── step() 전 초기 rest position에서 토폴로지+메쉬 생성 ─────────────────
-	// SofaUE5-Renderer 방식: 시뮬레이션 시작 전에 메쉬를 만들면 NaN 없음
 	BuildInitialMesh();
+	BuildInitialInstrumentMesh();
 
 	bInitialized = true;
 	StartSimulation();
@@ -181,10 +183,14 @@ void ASofaSimActor::BuildInitialMesh()
 		Verts.Add(FVector(sx * PositionScale, -sz * PositionScale, sy * PositionScale));
 	}
 
-	// 삼각형 인덱스 캐시
+	// 삼각형 인덱스 캐시 — Z축 반전으로 인한 와인딩 뒤집힘 보정 (1↔2 swap)
 	CachedTriangles.Reset(nbTris * 3);
-	for (unsigned int i = 0; i < nbTris * 3; i++)
-		CachedTriangles.Add((int32)tris[i]);
+	for (unsigned int i = 0; i < nbTris; i++)
+	{
+		CachedTriangles.Add((int32)tris[i * 3 + 0]);
+		CachedTriangles.Add((int32)tris[i * 3 + 2]);
+		CachedTriangles.Add((int32)tris[i * 3 + 1]);
+	}
 
 	// 노멀 (버퍼 버전 사용)
 	std::vector<float> normBuffer(nbVerts * 3);
@@ -263,14 +269,17 @@ void ASofaSimActor::Tick(float DeltaTime)
 		}
 	}
 
-	// 메쉬가 아직 없으면 이번 step() 이후 다시 시도 (초기 Inf 버텍스 안정화 대기)
 	if (!bTopoReady)
 	{
 		BuildInitialMesh();
 		return;
 	}
 
+	if (!bInstrumentTopoReady)
+		BuildInitialInstrumentMesh();
+
 	UpdateMesh();
+	UpdateInstrumentMesh();
 }
 
 void ASofaSimActor::UpdateMesh()
@@ -326,6 +335,98 @@ void ASofaSimActor::UpdateMesh()
 		TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>());
 }
 
+void ASofaSimActor::BuildInitialInstrumentMesh()
+{
+	SofaPhysicsOutputMesh* mesh = SofaAPI->getOutputMeshPtr(1);
+	if (!mesh) return;
+
+	unsigned int nbVerts = mesh->getNbVertices();
+	if (nbVerts == 0) return;
+
+	std::vector<float> posBuffer(nbVerts * 3);
+	if (mesh->getVPositions(posBuffer.data()) < 0) return;
+	const float* rawPos = posBuffer.data();
+
+	TArray<FVector> Verts;
+	Verts.Reserve(nbVerts);
+	for (unsigned int i = 0; i < nbVerts; i++)
+	{
+		float sx = rawPos[i * 3 + 0];
+		float sy = rawPos[i * 3 + 1];
+		float sz = rawPos[i * 3 + 2];
+		if (!FMath::IsFinite(sx) || !FMath::IsFinite(sy) || !FMath::IsFinite(sz)) return;
+		Verts.Add(FVector(sx * PositionScale, -sz * PositionScale, sy * PositionScale));
+	}
+
+	unsigned int nbTris = mesh->getNbTriangles();
+	const unsigned int* tris = mesh->getTriangles();
+	if (!tris || nbTris == 0) return;
+
+	// 와인딩 보정
+	CachedInstrumentTriangles.Reset(nbTris * 3);
+	for (unsigned int i = 0; i < nbTris; i++)
+	{
+		CachedInstrumentTriangles.Add((int32)tris[i * 3 + 0]);
+		CachedInstrumentTriangles.Add((int32)tris[i * 3 + 2]);
+		CachedInstrumentTriangles.Add((int32)tris[i * 3 + 1]);
+	}
+
+	std::vector<float> normBuffer(nbVerts * 3);
+	TArray<FVector> Normals;
+	if (mesh->getVNormals(normBuffer.data()) >= 0)
+	{
+		Normals.Reserve(nbVerts);
+		for (unsigned int i = 0; i < nbVerts; i++)
+			Normals.Add(FVector(normBuffer[i*3+0], -normBuffer[i*3+2], normBuffer[i*3+1]));
+	}
+
+	TArray<FVector2D> UV0;
+	TArray<FLinearColor> VC;
+	TArray<FProcMeshTangent> Tangents;
+	InstrumentMesh->CreateMeshSection_LinearColor(0, Verts, CachedInstrumentTriangles, Normals, UV0, VC, Tangents, false);
+	bInstrumentTopoReady = true;
+
+	UE_LOG(LogTemp, Log, TEXT("SofaSimActor: BuildInitialInstrumentMesh OK — %u verts, %u tris"), nbVerts, nbTris);
+}
+
+void ASofaSimActor::UpdateInstrumentMesh()
+{
+	if (!bInstrumentTopoReady) return;
+
+	SofaPhysicsOutputMesh* mesh = SofaAPI->getOutputMeshPtr(1);
+	if (!mesh) return;
+
+	unsigned int nbVerts = mesh->getNbVertices();
+	if (nbVerts == 0) return;
+
+	std::vector<float> posBuffer(nbVerts * 3);
+	if (mesh->getVPositions(posBuffer.data()) < 0) return;
+	const float* rawPos = posBuffer.data();
+
+	TArray<FVector> Verts;
+	Verts.Reserve(nbVerts);
+	for (unsigned int i = 0; i < nbVerts; i++)
+	{
+		float sx = rawPos[i * 3 + 0];
+		float sy = rawPos[i * 3 + 1];
+		float sz = rawPos[i * 3 + 2];
+		if (!FMath::IsFinite(sx) || !FMath::IsFinite(sy) || !FMath::IsFinite(sz)) return;
+		Verts.Add(FVector(sx * PositionScale, -sz * PositionScale, sy * PositionScale));
+	}
+
+	std::vector<float> normBuffer(nbVerts * 3);
+	TArray<FVector> Normals;
+	if (mesh->getVNormals(normBuffer.data()) >= 0)
+	{
+		Normals.Reserve(nbVerts);
+		for (unsigned int i = 0; i < nbVerts; i++)
+			Normals.Add(FVector(normBuffer[i*3+0], -normBuffer[i*3+2], normBuffer[i*3+1]));
+	}
+
+	InstrumentMesh->UpdateMeshSection(0, Verts, Normals,
+		TArray<FVector2D>(), TArray<FColor>(), TArray<FProcMeshTangent>());
+}
+
 void ASofaSimActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	ShutdownSOFA();
@@ -340,7 +441,7 @@ void ASofaSimActor::ShutdownSOFA()
 	if (SofaAPI)
 	{
 		SofaAPI->stop();
-		FPlatformProcess::Sleep(0.5f);
+		FPlatformProcess::Sleep(1.5f);
 		delete SofaAPI;
 		SofaAPI = nullptr;
 	}

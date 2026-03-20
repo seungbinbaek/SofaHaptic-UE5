@@ -38,6 +38,9 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "SOFA")
 	UProceduralMeshComponent* LiverMesh;
 
+	UPROPERTY(VisibleAnywhere, Category = "SOFA")
+	UProceduralMeshComponent* InstrumentMesh;
+
 	// Blueprint 제어
 	UFUNCTION(BlueprintCallable, Category = "SOFA")
 	void StartSimulation();
@@ -61,14 +64,18 @@ public:
 private:
 	void InitSOFA();
 	void ShutdownSOFA();
-	void BuildInitialMesh(); // step() 전 rest position에서 토폴로지+메쉬 생성
+	void BuildInitialMesh();
 	void UpdateMesh();
+	void BuildInitialInstrumentMesh();
+	void UpdateInstrumentMesh();
 
 	SofaPhysicsAPI* SofaAPI = nullptr;
 	bool bInitialized = false;
 	bool bRunning     = false;
 
-	// 위상(삼각형)은 첫 프레임에만 캐시
 	TArray<int32>   CachedTriangles;
 	bool            bTopoReady = false;
+
+	TArray<int32>   CachedInstrumentTriangles;
+	bool            bInstrumentTopoReady = false;
 };
